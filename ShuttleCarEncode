@@ -1,0 +1,146 @@
+ShuttleCarInOut	ShuttleCarIO	VAR_IN_OUT			
+xBrakeDelay	位	VAR			刹车延时位
+tBrakeDelay	定时器	VAR			刹车延时定时器
+xIdentifyAddressPos	位	VAR_INPUT			正方向认址片
+xIdentifyAddressNeg	位	VAR_INPUT			反方向认址片
+iHomeStep	字[有符号]	VAR			寻零步骤
+SEARCH_ADDRESS	字[有符号]	VAR_CONSTANT		100	寻址范围
+
+(********************************************************************
+此程序块用于认址片认址的编码器记录位置的输送小车的程序，当接近目标位置
+后遇到认址片后停止，本程序可以采用单认址片也可以用双认址片，双认址片防止
+正向运动与反向运动有误差，如果使用单认址片可以把两个认址片输入设成一个
+修改信息  修改后请增加版本
+SEARCH_ADDRESS   寻址范围  常量  100 根据实际情况修改   如果是多轴可以设置为变量
+YAO      V1.0
+*********************************************************************)
+//捕捉正限位
+ShuttleCarInOut.xPosLimitCatch:=LDF(TRUE,ShuttleCarInOut.xPosLimit) OR ShuttleCarInOut.xPosLimitCatch;
+IF ShuttleCarInOut.xCCW THEN   //反转解除正限位捕捉
+	ShuttleCarInOut.xPosLimitCatch:=0;
+END_IF;
+//捕捉负限位
+ShuttleCarInOut.xNegLimitCatch:=LDF(TRUE,ShuttleCarInOut.xNegLimit) OR ShuttleCarInOut.xNegLimitCatch;
+IF ShuttleCarInOut.xCW THEN   //正解除正限位捕捉
+	ShuttleCarInOut.xNegLimitCatch:=0;  
+END_IF;
+IF ShuttleCarInOut.xPassLimit 
+	OR (ShuttleCarInOut.xNegLimitCatch 
+	AND ShuttleCarInOut.xPosLimitCatch) THEN  //强制解除正限位捕捉与负限位捕捉
+	ShuttleCarInOut.xNegLimitCatch:=0; 
+	ShuttleCarInOut.xPosLimitCatch:=0;
+END_IF;
+IF ShuttleCarInOut.xReady THEN	//准备就绪
+    IF ShuttleCarInOut.xManual AND ShuttleCarInOut.xHomeBusy=0  THEN  //手动  xhomeing=0没有进行回零程序
+	    IF ShuttleCarInOut.xForward 
+			AND ShuttleCarInOut.xBackward=0 
+			AND ShuttleCarInOut.xCCW=0 
+			AND ShuttleCarInOut.xPosLimitCatch=0 THEN  //正转
+		    ShuttleCarInOut.xCW:=1;
+		    ELSE
+		    ShuttleCarInOut.xCW:=0;
+	    END_IF;
+	    IF ShuttleCarInOut.xBackward 
+			AND ShuttleCarInOut.xForward=0 
+			AND ShuttleCarInOut.xCW=0 
+			AND ShuttleCarInOut.xNegLimitCatch=0 THEN   //反转
+		    ShuttleCarInOut.xCCW:=1;
+		    ELSE
+		    ShuttleCarInOut.xCCW:=0;
+	    END_IF;
+	END_IF;
+	 IF ShuttleCarInOut.xManual THEN//回零程序 先碰后限位开关，然后反向行走找零位开关
+			CASE iHomeStep OF
+				0://初始化
+				iHomeStep:=1;
+				ShuttleCarInOUt.xHomeBusy:=0;
+				1: IF LDP(TRUE,ShuttleCarInOut.xHomeExe) THEN  //检测HOME执行上升沿
+				      iHomeStep:=2;
+				      ShuttleCarInOut.xHomeDone:=0;
+					  ShuttleCarInOut.xHomeFailed:=0;
+                   END_IF;
+                2://反向撞限位			
+                ShuttleCarInOut.xCCW:=1;
+                ShuttleCarInOut.xCW:=0;
+				ShuttleCarInOUt.xHomeBusy:=1;
+                IF ShuttleCarInOut.xNegLimit=0 THEN
+	               iHomeStep:=3;
+                END_IF;
+                3://撞限位后返回，寻找零位开关
+                ShuttleCarInOut.xCW:=1;
+                ShuttleCarInOut.xCCW:=0;
+				ShuttleCarInOUt.xHomeBusy:=1;
+				IF ShuttleCarInOut.xPosLimit=0 THEN
+					ShuttleCarInOut.xCW:=0;
+					ShuttleCarInOut.xCCW:=0; 
+					ShuttleCarInOut.xHomeFailed:=1;
+					iHomeStep:=0;
+				END_IF;
+                IF ShuttleCarInOut.xHomeSwitch THEN
+	            ShuttleCarInOut.xCW:=0;
+	            ShuttleCarInOut.xCCW:=0; 
+	            ShuttleCarInOut.xHomeDone:=1;
+	            iHomeStep:=0;
+                END_IF;
+			END_CASE;
+		END_IF;
+	IF ShuttleCarInOut.xAuto AND ShuttleCarInOut.xHomeDone THEN  //自动  //归零完毕
+		IF ShuttleCarInOut.xMDIExe THEN  //MDI启动
+			IF ShuttleCarInOut.diDestinationPos-ShuttleCarInOut.diCurrentPos>(SEARCH_ADDRESS*(-1)) THEN   //判断方向 为正方向
+				IF ShuttleCarInOut.diDestinationPos-ShuttleCarInOut.diCurrentPos>SEARCH_ADDRESS THEN   //目标位置距离当前位置大于100的时候不检测认址片
+				    ShuttleCarInOut.xCW:=1;
+				    ShuttleCarInOut.xCCW:=0;
+				ELSIF ShuttleCarInOut.diDestinationPos-ShuttleCarInOut.diCurrentPos<=SEARCH_ADDRESS
+				AND ShuttleCarInOut.xCW
+				AND xIdentifyAddressPos THEN  //距离小于50时搜索认址片
+						ShuttleCarInOut.xCW:=0;
+						ShuttleCarInOut.xCCW:=0;
+						ShuttleCarInOut.xMDIDone:=1;    //动作完成
+				END_IF;				
+			END_IF;
+			IF ShuttleCarInOut.diDestinationPos-ShuttleCarInOut.diCurrentPos<SEARCH_ADDRESS THEN   //判断方向 为负方向
+				IF ShuttleCarInOut.diDestinationPos-ShuttleCarInOut.diCurrentPos<(SEARCH_ADDRESS*(-1)) THEN     //目标位置距离当前位置大于100的时候不检测认址片
+				    ShuttleCarInOut.xCCW:=1;
+				    ShuttleCarInOut.xCW:=0;
+					ELSIF ShuttleCarInOut.diDestinationPos-ShuttleCarInOut.diCurrentPos>=(SEARCH_ADDRESS*(-1))
+					AND ShuttleCarInOut.xCCW
+					AND xIdentifyAddressNeg THEN  //距离小于100时搜索认址片
+					ShuttleCarInOut.xCW:=0;
+					ShuttleCarInOut.xCCW:=0;
+					ShuttleCarInOut.xMDIDone:=1;       //动作完成
+				END_IF;
+			END_IF;
+			IF ShuttleCarInOut.diDestinationPos-ShuttleCarInOut.diCurrentPos>SEARCH_ADDRESS OR ShuttleCarInOut.xNegLimitCatch=1 THEN  //100距离内未检测到认址片
+				  ShuttleCarInOut.xCCW:=0;
+				  ShuttleCarInOut.xMDIDone:=0;
+			END_IF;
+			IF ShuttleCarInOut.diDestinationPos-ShuttleCarInOut.diCurrentPos<(SEARCH_ADDRESS*(-1)) OR ShuttleCarInOut.xPosLimitCatch=1 THEN   //100距离内未检测到认址片
+				  ShuttleCarInOut.xCW:=0;
+				  ShuttleCarInOut.xMDIDone:=0;
+			END_IF;
+			ELSE
+			ShuttleCarInOut.xCW:=0;
+			ShuttleCarInOut.xCCW:=0;
+			ShuttleCarInOut.xMDIDone:=0;
+		END_IF;
+	END_IF;
+END_IF;
+//抱闸控制
+out_t(xBrakeDelay,tBrakeDelay,K4);//抱闸延时   40ms根据Z轴的下降距离修改，
+IF (ShuttleCarInOut.xCW OR ShuttleCarInOut.xCCW) AND ShuttleCarInOut.xReady=1 THEN
+	ShuttleCarInOut.xBrake:=tBrakeDelay.S;
+	xBrakeDelay:=1;
+	ELSE
+	ShuttleCarInOut.xBrake:=0;
+	xBrakeDelay:=0;
+END_IF;
+//工作中信号，可以用来接蜂鸣器提醒
+IF ShuttleCarInOut.xCW OR ShuttleCarInOut.xCCW THEN
+	ShuttleCarInOut.xBusy:=1;
+	ELSE
+	ShuttleCarInout.xBusy:=0;
+END_IF;
+//复位信号
+IF ShuttleCarInOut.xReset THEN
+	iHomeStep:=0;
+END_IF;
