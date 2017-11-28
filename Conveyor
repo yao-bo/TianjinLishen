@@ -1,0 +1,146 @@
+tRundelay	定时器	VAR			离开延时
+ConveyorMotor	ConveyorIO	VAR_IN_OUT			输送线输入输出
+iStep	字[有符号]	VAR			上料步骤
+m_tLoadTimer	定时器	VAR			上料计时器
+m_tUnloadTimer	定时器	VAR			下料计时器
+LOAD_UNLOAD_TIME	字[有符号]	VAR_CONSTANT		300	上下料时间，超时报警
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//传输线控制FB块，可控制单方向线体，双向旋转线体，支持双向上下料            
+//线体初始化后为空的情况下输入xLoad信号即可进行上料动作，使用xLoadCCW信号可反方向上料
+//增加了产品信息和产品种类的储存，当传输线为空和上料进行标志位为零的情况下清除产品信息和产品种类
+//使用方式是在置位xLoad信号后，把产品信息和产品种类传入，等下料后自动清零
+//线体不为空的情况下使用xUnload信号可进行下料动作，物料有无传感器的下降沿后出发计时器，延时断开传输线旋转
+//单方向传输线体把xLoadCCW、xUnloadCCW设置为零，双向线体上料方向和下料反向的,方向固定的 把xUnloadCCW设置为1
+//双方向线体双向都能上下料的要根据上料的方向来设置xLoadCCW,xUnloadCCW
+//增加工作中信号xBusy当电机正转 显示为工作中
+//增加上下料超时报警，xLoadAlarm，xUnloadAlarm，设定时间在LOAD_UNLOAD_TIME常量上，现在设置的为30秒
+//增加xPutInto信号，用于直接投入的物料，检测开关感应到后，直接进入下料流程，上升沿有效
+//离开延时改为变量 iLeaveDelay 默认为0 离开检测开关离输送线尾端比较远的线体需要根据情况设定100ms为单位
+//修改信息  修改后请增加版本
+//YAO      V1.0
+///////////////////////////////////////////////////////////////////////////////////////////////////////////
+(*********************************************************)
+//自动
+//ConveyorMotor.xEstop 采用了一个不正确的逻辑，输入量应该是常为1，这样设计避免忘记输入急停接口而导致输送线不动作
+//复位信号把步号置0，但xLoad与xUnload没有复位，调用程序需要注意复位后把这两个信号置零，以免发生误动作
+IF ConveyorMotor.xAuto THEN
+CASE iStep OF
+	0://初始化
+	ConveyorMotor.xMotorCW:=0;
+	ConveyorMotor.xMotorCCW:=0;
+	ConveyorMotor.xNextRun:=0;
+	//判断物料有无传感器
+	IF (ConveyorMotor.xCWPresent OR ConveyorMotor.xCCWPresent) 
+		AND ConveyorMotor.xEStop=0 
+		AND ConveyorMotor.xLoadAlarrm = 0
+		AND ConveyorMotor.xUnloadAlarm = 0 THEN
+		iStep:=3;
+		ConveyorMotor.xEmpty:=0;
+		ELSE
+		iStep:=1;
+		ConveyorMotor.xEmpty:=1;
+	END_IF;
+		
+	1: //上料
+	IF ConveyorMotor.xLoad     //上料开始
+		AND ConveyorMotor.xMotorCW=0    //无正转
+		AND ConveyorMotor.xMotorCCW=0   //无反转
+		AND ConveyorMotor.xEmpty THEN	//为空料盘	
+		iStep:=2;
+	END_IF;
+	2: //上料完成
+	IF ConveyorMotor.xloadCCW THEN  //判断是否是反转上料
+		ConveyorMotor.xMotorCCW:=1; 
+		ConveyorMotor.xMotorCW:=0;
+		IF ConveyorMotor.xCCWPresent THEN//感应反转
+			iStep:=3;
+		END_IF;
+		ELSE
+	    ConveyorMotor.xMotorCW:=1;  
+		ConveyorMotor.xMotorCCW:=0;
+	    IF ConveyorMotor.xCWPresent THEN 		 //感应正转
+		    iStep:=3;
+		END_IF;
+	END_IF;
+//	IF ConveyorMotor.xLoad =0 THEN    //无上料信号后 停止旋转 重新初始化 
+//Load 信号一般接上段线体的 Leave信号，加上这段程序容易导致未到达位置而线体停止
+//		iStep:=0;
+//	END_IF;
+	3://下料请求
+	ConveyorMotor.xMotorCW:=0;
+	ConveyorMotor.xMotorCCW:=0;
+	ConveyorMotor.xEmpty:=0;
+	IF ConveyorMotor.xUnload THEN 
+		iStep:=4;
+	END_IF;
+	4:	//下料完成
+	IF ConveyorMotor.xUnloadCCW THEN   
+		ConveyorMotor.xMotorCCW:=1;    //反转下料
+		ConveyorMotor.xMotorCW:=0;
+		//离开检测有无开关的下降沿
+		ConveyorMotor.xLeave:=ldf(TRUE,ConveyorMotor.xCCWPresent) OR ConveyorMotor.xLeave;
+		ELSE
+	    ConveyorMotor.xMotorCW:=1;   // 正转下料
+		ConveyorMotor.xMotorCCW:=0;
+		ConveyorMotor.xLeave:=ldf(TRUE,ConveyorMotor.xCWPresent) OR ConveyorMotor.xLeave;
+	END_IF;
+	ConveyorMotor.xNextRun:=1;  //通知下段线体下料
+	
+	OUT_T(ConveyorMotor.xLeave,tRundelay,ConveyorMotor.iLeaveDelay);  //离开延时 当前为2秒,可修改根据情况可做成变量
+	IF tRundelay.S THEN
+		ConveyorMotor.xMotorCW:=0;
+		ConveyorMotor.xMotorCCW:=0;
+		iStep:=0;
+		ConveyorMotor.xNextRun:=0;
+		ConveyorMotor.xLeave:=0;
+		ConveyorMotor.xEmpty:=1;		
+	END_IF;	
+	IF NOT ConveyorMotor.xUnload THEN  //无上料信号后停止
+		istep:=0;
+	END_IF;
+END_CASE;
+IF LDP(TRUE,ConveyorMotor.xPutInto) THEN
+	iStep:=0;
+END_IF;
+END_IF;
+IF ConveyorMotor.xEmpty AND NOT ConveyorMotor.xLoad THEN
+	ConveyorMotor.strProductSerial:='';//清除产品型号信息
+	ConveyorMotor.iProductCategory:=0;
+END_IF;
+IF ConveyorMotor.xEStop OR ConveyorMotor.xReset THEN
+	iStep:=0;
+END_IF;	
+//手动
+IF ConveyorMotor.xManual THEN
+	iStep:=0; //手动后上下料程序步骤清零
+	//正转
+	IF ConveyorMotor.xForward 
+		AND ConveyorMotor.xBackward=0 
+		AND ConveyorMotor.xMotorCCW=0 THEN
+		ConveyorMotor.xMotorCW:=1;
+		ConveyorMotor.xMotorCCW:=0;
+		ELSE
+		ConveyorMotor.xMotorCW:=0;
+	END_IF;
+	//反转
+	IF ConveyorMotor.xBackward 
+		AND ConveyorMotor.xForward=0 
+		AND ConveyorMotor.xMotorCW=0  THEN
+		ConveyorMotor.xMotorCCW:=1;
+		conveyormotor.xMotorCW:=0;
+		ELSE
+		ConveyorMotor.xMotorCCW:=0;
+	END_IF;
+END_IF;
+IF ConveyorMotor.xMotorCCW        //电机正转
+	OR ConveyorMotor.xMotorCW THEN  //电机反转
+	ConveyorMotor.xBusy:=1;
+	ELSE
+	ConveyorMotor.xBusy:=0;
+END_IF;
+//上下料超时报警
+OUT_T(iStep=2,m_tLoadTimer,LOAD_UNLOAD_TIME);
+OUT_T(iStep=4,m_tUnloadTimer,LOAD_UNLOAD_TIME);
+ConveyorMotor.xLoadAlarrm:=m_tLoadTimer.S;
+ConveyorMotor.xUnloadAlarm:=m_tUnloadTimer.S;
